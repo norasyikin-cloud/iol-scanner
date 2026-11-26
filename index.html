@@ -34,7 +34,7 @@
 </style>
 </head>
 <body>
-<header>IOL Scanner <span style="font-weight:normal;font-size:12px;opacity:.8">v7</span></header>
+<header>IOL Scanner <span style="font-weight:normal;font-size:12px;opacity:.8">v8</span></header>
 <main>
   <!-- PIN -->
   <div id="pinCard" class="card">
@@ -90,14 +90,14 @@
       </div>
       <div id="newProd" class="hidden">
         <p id="newProdMsg" class="msg warn">New product code. Please fill this in once, and it will be remembered.</p>
-        <label for="pBrand">Brand</label>
-        <input id="pBrand" list="brandList" autocomplete="off"><datalist id="brandList"></datalist>
-        <label for="pModel">Model</label>
-        <input id="pModel" autocomplete="off">
+        <label for="pBrandSel">Brand</label>
+        <select id="pBrandSel"></select>
+        <input id="pBrandNew" class="hidden" autocomplete="off" placeholder="Type the brand name" style="margin-top:6px">
+        <label for="pModelSel">Model</label>
+        <select id="pModelSel"></select>
+        <input id="pModelNew" class="hidden" autocomplete="off" placeholder="Type the model, e.g. CT LUCIA 202" style="margin-top:6px">
         <label for="pPower">Power (D), e.g. 20.5</label>
         <input id="pPower" type="number" step="0.25" inputmode="decimal">
-        <label for="pVendor">Vendor</label>
-        <select id="pVendor"></select>
       </div>
       <div id="soWrap" class="hidden">
         <label for="soExp">Expiry month (from the box)</label>
@@ -162,8 +162,10 @@ if (load('pin')) $('pinBtn').click();
 function setup() {
   fill('staff', CFG.staff, load('staff'), 'Choose your name');
   fill('location', CFG.locations, load('location'));
-  fill('pVendor', CFG.vendors, '', 'Choose vendor');
-  $('brandList').innerHTML = CFG.brands.map(function (b) { return '<option value="' + esc(b) + '">'; }).join('');
+  CFG.models = CFG.models || {};
+  fillBrands();
+  $('pBrandSel').onchange = function () { $('pBrandNew').classList.toggle('hidden', $('pBrandSel').value !== OTHER); fillModels(); };
+  $('pModelSel').onchange = function () { $('pModelNew').classList.toggle('hidden', $('pModelSel').value !== NEWMODEL); };
   $('actions').innerHTML = CFG.actions.map(function (a, i) {
     return '<button data-i="' + i + '">' + esc(a) + '</button>';
   }).join('');
@@ -175,6 +177,50 @@ function setup() {
   $('location').onchange = function () { store('location', $('location').value); };
   refreshRecent();
 }
+// ---- Brand and model pickers (brand list from Settings vendors + Products; models per brand from Products) ----
+var OTHER = '__other__', NEWMODEL = '__new__';
+function fillBrands() {
+  var h = '<option value="">Choose brand</option>';
+  CFG.brands.forEach(function (b) { h += '<option>' + esc(b) + '</option>'; });
+  $('pBrandSel').innerHTML = h + '<option value="' + OTHER + '">Others (type it)</option>';
+  fillModels();
+}
+function fillModels() {
+  var b = $('pBrandSel').value, list = (b && b !== OTHER && CFG.models[b]) || [];
+  var h = '<option value="">' + (list.length ? 'Choose model' : 'Choose brand first') + '</option>';
+  if (!b) { $('pModelSel').innerHTML = h; $('pModelNew').classList.add('hidden'); return; }
+  list.forEach(function (m) { h += '<option>' + esc(m) + '</option>'; });
+  $('pModelSel').innerHTML = h + '<option value="' + NEWMODEL + '">New model (type it)</option>';
+  if (!list.length) $('pModelSel').value = NEWMODEL;
+  $('pModelNew').classList.toggle('hidden', $('pModelSel').value !== NEWMODEL);
+}
+function setBrand(b) {
+  b = b || '';
+  if (!b) $('pBrandSel').value = '';
+  else if (CFG.brands.indexOf(b) >= 0) $('pBrandSel').value = b;
+  else { $('pBrandSel').value = OTHER; $('pBrandNew').value = b; }
+  $('pBrandNew').classList.toggle('hidden', $('pBrandSel').value !== OTHER);
+  fillModels();
+}
+function setModel(m) {
+  m = m || '';
+  var b = $('pBrandSel').value, list = (CFG.models[b] || []);
+  if (!m) return;
+  if (list.indexOf(m) >= 0) $('pModelSel').value = m;
+  else if (b) { $('pModelSel').value = NEWMODEL; $('pModelNew').value = m; }
+  $('pModelNew').classList.toggle('hidden', $('pModelSel').value !== NEWMODEL);
+}
+function brandVal() { var v = $('pBrandSel').value; return (v === OTHER ? $('pBrandNew').value : v).trim(); }
+function modelVal() { var v = $('pModelSel').value; return (v === NEWMODEL ? $('pModelNew').value : v).trim(); }
+function clearProd() { $('pBrandNew').value = ''; $('pModelNew').value = ''; $('pPower').value = ''; setBrand(''); }
+function rememberProd(b, m) {
+  if (!b) return;
+  if (CFG.brands.indexOf(b) < 0) CFG.brands.push(b);
+  CFG.models[b] = CFG.models[b] || [];
+  if (m && CFG.models[b].indexOf(m) < 0) { CFG.models[b].push(m); CFG.models[b].sort(); }
+  var keep = brandVal(); fillBrands(); setBrand(keep);
+}
+
 function setAction(a) {
   ACTION = a; store('action', a);
   Array.prototype.forEach.call($('actions').children, function (b) {
@@ -359,8 +405,8 @@ function showResult(res) {
   $('soWrap').classList.add('hidden');
   $('serialWrap').classList.toggle('hidden', !res.needSerial);
   $('serialIn').value = '';
-  ['pBrand', 'pModel', 'pPower'].forEach(function (id) { $(id).value = ''; });
-  if (!pr && HINT) { $('pModel').value = HINT.model || ''; $('pPower').value = HINT.power || ''; }
+  clearProd();
+  if (!pr && HINT) { $('pPower').value = HINT.power || ''; HINT.model && ($('pModelNew').value = HINT.model); }
   var warn = checkAction(l);
   msg('saveMsg', warn, warn ? 'warn' : '');
   if (l && !$('mrn').value && l.mrn) $('mrn').value = l.mrn;
@@ -383,9 +429,7 @@ function showSerialForm(sn) {
   $('details').innerHTML = row('Serial', sn) + row('Status now', 'New lens, not in the sheet yet');
   $('newProdMsg').textContent = 'This box has only a serial number. Fill in the details from the box. If it also has a long UDI barcode, you can scan that instead.';
   $('newProd').classList.remove('hidden'); $('soWrap').classList.remove('hidden'); $('serialWrap').classList.add('hidden');
-  if (!$('pBrand').value) $('pBrand').value = load('soBrand');
-  if (!$('pModel').value) $('pModel').value = load('soModel');
-  if (!$('pVendor').value && load('soVendor')) $('pVendor').value = load('soVendor');
+  if (!brandVal()) { setBrand(load('soBrand')); setModel(load('soModel')); }
   $('soExp').value = ''; $('soLot').value = '';
   var warn = checkAction(null);
   msg('saveMsg', warn, warn ? 'warn' : '');
@@ -415,13 +459,13 @@ $('saveBtn').onclick = function () {
   if (!$('staff').value) { msg('saveMsg', 'Choose your name first.', 'bad'); return; }
   var raw = CURRENT.raw;
   if (CURRENT.serialOnly) {
-    var model = $('pModel').value.trim(), power = $('pPower').value, exp = monthToGs1($('soExp').value.trim());
-    if (!$('pBrand').value.trim() || !model || power === '') { msg('saveMsg', 'Fill in brand, model and power from the box.', 'bad'); return; }
+    var model = modelVal(), power = $('pPower').value, exp = monthToGs1($('soExp').value.trim());
+    if (!brandVal() || !model || power === '') { msg('saveMsg', 'Fill in brand, model and power from the box.', 'bad'); return; }
     if (!exp) { msg('saveMsg', 'Choose the expiry month from the box.', 'bad'); return; }
     var code = 'M' + model.toUpperCase().replace(/[^A-Z0-9]/g, '') + '-' + Math.round(Number(power) * 100);
     var lot = $('soLot').value.trim().toUpperCase().replace(/[()]/g, '');
     raw = '(01)' + code + '(17)' + exp + (lot ? '(10)' + lot : '') + '(21)' + CURRENT.serialOnly;
-    store('soBrand', $('pBrand').value.trim()); store('soModel', model); store('soVendor', $('pVendor').value);
+    store('soBrand', brandVal()); store('soModel', model);
   }
   if (CURRENT.res.needSerial) {
     var sn = $('serialIn').value.trim().toUpperCase();
@@ -430,7 +474,7 @@ $('saveBtn').onclick = function () {
   }
   var data = {raw: raw, staff: $('staff').value, action: ACTION, mrn: $('mrn').value.trim(),
     otRef: $('otRef').value.trim(), notes: $('notes').value.trim(), location: $('location').value,
-    product: {brand: $('pBrand').value.trim(), model: $('pModel').value.trim(), power: $('pPower').value, vendor: $('pVendor').value}};
+    product: {brand: brandVal(), model: modelVal(), power: $('pPower').value, vendor: brandVal()}};
   if (!CURRENT.res.product && (!data.product.brand || !data.product.model || data.product.power === '')) {
     msg('saveMsg', 'Fill in brand, model and power for this new product.', 'bad'); return;
   }
@@ -441,7 +485,8 @@ $('saveBtn').onclick = function () {
     PENDING = null; HINT = null;
     msg('scanMsg', 'Saved: ' + (pr.brand || '') + ' ' + (pr.model || '') + ' ' + (pr.power || '') + ' D, serial ' + res.parsed.serial + '. Status: ' + (l.status || '') + '.', 'ok');
     $('resultCard').classList.add('hidden'); $('notes').value = '';
-    ['pBrand', 'pModel', 'pPower'].forEach(function (id) { $(id).value = ''; });
+    if (!CURRENT.res.product) rememberProd(data.product.brand, data.product.model);
+    clearProd();
     CURRENT = null; refreshRecent();
     window.scrollTo({top: 0, behavior: 'smooth'});
   }, function (e) { busy = false; $('saveBtn').disabled = false; msg('saveMsg', e, 'bad'); });
