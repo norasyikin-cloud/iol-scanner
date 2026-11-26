@@ -34,7 +34,7 @@
 </style>
 </head>
 <body>
-<header>IOL Scanner <span style="font-weight:normal;font-size:12px;opacity:.8">v6</span></header>
+<header>IOL Scanner <span style="font-weight:normal;font-size:12px;opacity:.8">v7</span></header>
 <main>
   <!-- PIN -->
   <div id="pinCard" class="card">
@@ -89,7 +89,7 @@
         <button id="useLotBtn" class="secondary">No serial on the box: use the lot number</button>
       </div>
       <div id="newProd" class="hidden">
-        <p class="msg warn">New product code. Please fill this in once, and it will be remembered.</p>
+        <p id="newProdMsg" class="msg warn">New product code. Please fill this in once, and it will be remembered.</p>
         <label for="pBrand">Brand</label>
         <input id="pBrand" list="brandList" autocomplete="off"><datalist id="brandList"></datalist>
         <label for="pModel">Model</label>
@@ -98,6 +98,12 @@
         <input id="pPower" type="number" step="0.25" inputmode="decimal">
         <label for="pVendor">Vendor</label>
         <select id="pVendor"></select>
+      </div>
+      <div id="soWrap" class="hidden">
+        <label for="soExp">Expiry month (from the box)</label>
+        <input id="soExp" type="month" placeholder="MM/YYYY">
+        <label for="soLot">Lot (optional)</label>
+        <input id="soLot" autocomplete="off">
       </div>
       <label for="notes">Notes (optional)</label>
       <input id="notes" autocomplete="off">
@@ -206,11 +212,26 @@ function parseCustom(t) {
   if (!m) return null;
   return {ai01: 'X' + m[1] + m[2], ai21: m[3], ai17: m[5] + m[4] + '00', hint: {model: m[1], power: Number(m[2]) / 10}};
 }
+// GS1 Digital Link QR codes, e.g. https://id.gs1.org/01/05213002585887/10/P221017/21/P22101720294?17=270917
+function fromDigitalLink(t) {
+  var s = String(t).trim(), m = /\/01\/(\d{14})((?:\/(?:10|21|22)\/[^\/?#]+)*)(?:\?([^#]*))?/.exec(s);
+  if (!/^https?:\/\//i.test(s) || !m) return t;
+  var out = '(01)' + m[1], q = m[3] || '', e = /(?:^|&)17=(\d{6})/.exec(q);
+  if (e) out += '(17)' + e[1];
+  (m[2] || '').replace(/\/(10|21|22)\/([^\/?#]+)/g, function (x, ai, v) { out += '(' + ai + ')' + decodeURIComponent(v); return x; });
+  return out;
+}
+// A plain barcode that holds only a serial number, e.g. "P240947522" or "S/N:P22101720294".
+function plainSerial(t) {
+  var s = String(t).trim().replace(/^(S\/?N|SERIAL(\s*NO\.?)?)\s*[:#.]?\s*/i, '').toUpperCase();
+  if (/^\d{8}$/.test(s) || /^\d{12,13}$/.test(s)) return null;   // shop (EAN/UPC) barcodes
+  return /^[A-Z0-9][A-Z0-9\-\/.]{3,29}$/.test(s) ? s : null;
+}
 // Put several codes from one box together (some brands split the UDI over two line barcodes).
 function combine(texts) {
   var m = PENDING && (Date.now() - PENDING.t < 180000) ? PENDING.p : {};
   texts.forEach(function (t) {
-    var p = parseGs1(t);
+    var p = parseGs1(fromDigitalLink(t));
     if (!p.gtin && !p.ai21) p = parseCustom(t) || p;
     ['ai01', 'ai11', 'ai17', 'ai10', 'ai21', 'hint'].forEach(function (k) { if (p[k] && !m[k]) m[k] = p[k]; });
   });
@@ -222,14 +243,13 @@ function combine(texts) {
 function handleTexts(texts) {
   var c = combine(texts);
   if (!c) {
-    msg('scanMsg', texts.length ? 'That is not a lens UDI code (it looks like a shop barcode). Scan the UDI code on the lens box.' : 'No code found.', 'bad');
+    var sn = null;
+    texts.some(function (t) { return (sn = plainSerial(t)); });
+    if (sn) { serialOnly(sn); return true; }
+    msg('scanMsg', texts.length ? 'That is not a lens code. The code says: "' + String(texts[0]).slice(0, 80) + '". Scan the UDI or serial number barcode on the lens box.' : 'No code found.', 'bad');
     return false;
   }
-  if (!c.p.ai01) {
-    PENDING = {p: c.p, t: Date.now()};
-    msg('scanMsg', 'Got the serial number. Now scan the barcode with the product code (01).', 'warn');
-    return false;
-  }
+  if (!c.p.ai01) { serialOnly(c.p.ai21); return true; }
   // Product code found. If there is no serial, the page asks for it (or a second barcode can still be scanned).
   PENDING = c.p.ai21 ? null : {p: c.p, t: Date.now()};
   HINT = c.p.hint || null;
@@ -335,14 +355,49 @@ function showResult(res) {
   }
   $('details').innerHTML = h;
   $('newProd').classList.toggle('hidden', !!pr);
+  $('newProdMsg').textContent = 'New product code. Please fill this in once, and it will be remembered.';
+  $('soWrap').classList.add('hidden');
   $('serialWrap').classList.toggle('hidden', !res.needSerial);
   $('serialIn').value = '';
+  ['pBrand', 'pModel', 'pPower'].forEach(function (id) { $(id).value = ''; });
   if (!pr && HINT) { $('pModel').value = HINT.model || ''; $('pPower').value = HINT.power || ''; }
   var warn = checkAction(l);
   msg('saveMsg', warn, warn ? 'warn' : '');
   if (l && !$('mrn').value && l.mrn) $('mrn').value = l.mrn;
   $('resultCard').classList.remove('hidden');
   $('resultCard').scrollIntoView({behavior: 'smooth'});
+}
+// Serial-only box: find the lens in the sheet by serial; if it is new, staff fill in the details once.
+function serialOnly(sn) {
+  if (navigator.vibrate) navigator.vibrate(80);
+  PENDING = {p: {ai21: sn}, t: Date.now()};
+  msg('scanMsg', 'Looking up serial ' + sn + '...', '');
+  call('lookupSerial', [PIN, sn], function (res) {
+    msg('scanMsg', '');
+    if (res && res.ok && !res.notFound && res.raw) { PENDING = null; CURRENT = {raw: res.raw, res: res}; showResult(res); return; }
+    showSerialForm(sn);
+  }, function () { msg('scanMsg', ''); showSerialForm(sn); });
+}
+function showSerialForm(sn) {
+  CURRENT = {raw: '', serialOnly: sn, res: {parsed: {serial: sn}, product: null, lens: null}};
+  $('details').innerHTML = row('Serial', sn) + row('Status now', 'New lens, not in the sheet yet');
+  $('newProdMsg').textContent = 'This box has only a serial number. Fill in the details from the box. If it also has a long UDI barcode, you can scan that instead.';
+  $('newProd').classList.remove('hidden'); $('soWrap').classList.remove('hidden'); $('serialWrap').classList.add('hidden');
+  if (!$('pBrand').value) $('pBrand').value = load('soBrand');
+  if (!$('pModel').value) $('pModel').value = load('soModel');
+  if (!$('pVendor').value && load('soVendor')) $('pVendor').value = load('soVendor');
+  $('soExp').value = ''; $('soLot').value = '';
+  var warn = checkAction(null);
+  msg('saveMsg', warn, warn ? 'warn' : '');
+  $('resultCard').classList.remove('hidden');
+  $('resultCard').scrollIntoView({behavior: 'smooth'});
+}
+function monthToGs1(v) {
+  var m = /^(\d{4})-(\d{2})$/.exec(v) || null, y, mo;
+  if (m) { y = m[1]; mo = m[2]; }
+  else { m = /^(\d{1,2})\s*[\/\-.]\s*(\d{4}|\d{2})$/.exec(v); if (!m) return ''; mo = ('0' + m[1]).slice(-2); y = m[2].length === 2 ? '20' + m[2] : m[2]; }
+  if (+mo < 1 || +mo > 12) return '';
+  return y.slice(2) + mo + '00';
 }
 function row(a, b) { return '<div class="row"><span>' + esc(a) + '</span><span>' + esc(b) + '</span></div>'; }
 function checkAction(l) {
@@ -359,6 +414,15 @@ $('saveBtn').onclick = function () {
   if (!CURRENT || busy) return;
   if (!$('staff').value) { msg('saveMsg', 'Choose your name first.', 'bad'); return; }
   var raw = CURRENT.raw;
+  if (CURRENT.serialOnly) {
+    var model = $('pModel').value.trim(), power = $('pPower').value, exp = monthToGs1($('soExp').value.trim());
+    if (!$('pBrand').value.trim() || !model || power === '') { msg('saveMsg', 'Fill in brand, model and power from the box.', 'bad'); return; }
+    if (!exp) { msg('saveMsg', 'Choose the expiry month from the box.', 'bad'); return; }
+    var code = 'M' + model.toUpperCase().replace(/[^A-Z0-9]/g, '') + '-' + Math.round(Number(power) * 100);
+    var lot = $('soLot').value.trim().toUpperCase().replace(/[()]/g, '');
+    raw = '(01)' + code + '(17)' + exp + (lot ? '(10)' + lot : '') + '(21)' + CURRENT.serialOnly;
+    store('soBrand', $('pBrand').value.trim()); store('soModel', model); store('soVendor', $('pVendor').value);
+  }
   if (CURRENT.res.needSerial) {
     var sn = $('serialIn').value.trim().toUpperCase();
     if (!sn) { msg('saveMsg', 'Type the serial number from the box first.', 'bad'); return; }
