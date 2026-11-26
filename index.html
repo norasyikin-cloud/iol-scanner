@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>IOL Scanner</title>
+<meta name="robots" content="noindex">
+<script src="https://cdn.jsdelivr.net/npm/zxing-wasm@2.2.4/dist/iife/reader/index.js"></script>
+<style>
+  :root { --blue:#1F4E79; --bg:#f4f6f8; --ok:#1e7e34; --warn:#b26a00; --bad:#a61b1b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Arial, Helvetica, sans-serif; background:var(--bg); color:#222; font-size:16px; }
+  header { background:var(--blue); color:#fff; padding:12px 16px; font-weight:bold; font-size:18px; }
+  main { padding:12px 16px 40px; max-width:560px; margin:0 auto; }
+  .card { background:#fff; border-radius:10px; padding:14px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,.1); }
+  label { display:block; font-size:13px; color:#555; margin:10px 0 4px; }
+  input, select, textarea { width:100%; font-size:16px; padding:10px; border:1px solid #bbb; border-radius:8px; background:#fff; }
+  button { font-size:16px; padding:12px; border:0; border-radius:8px; background:var(--blue); color:#fff; width:100%; margin-top:10px; }
+  button.secondary { background:#e3e8ee; color:#222; }
+  button:disabled { opacity:.5; }
+  .actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .actions button { margin:0; background:#e3e8ee; color:#222; font-size:14px; padding:12px 6px; }
+  .actions button.on { background:var(--blue); color:#fff; }
+  #reader { width:100%; border-radius:8px; overflow:hidden; }
+  .row { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid #eee; font-size:14px; }
+  .row span:first-child { color:#666; }
+  .msg { padding:10px; border-radius:8px; margin-top:10px; font-size:14px; }
+  .msg.ok { background:#e6f4ea; color:var(--ok); }
+  .msg.warn { background:#fff4e0; color:var(--warn); }
+  .msg.bad { background:#fde8e8; color:var(--bad); }
+  .hidden { display:none; }
+  .small { font-size:13px; color:#666; }
+  .recent div { font-size:13px; padding:6px 0; border-bottom:1px solid #eee; }
+</style>
+</head>
+<body>
+<header>IOL Scanner <span style="font-weight:normal;font-size:12px;opacity:.8">v6</span></header>
+<main>
+  <!-- PIN -->
+  <div id="pinCard" class="card">
+    <label for="pin">Clinic scanner PIN</label>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="off">
+    <button id="pinBtn">Open scanner</button>
+    <div id="pinMsg"></div>
+  </div>
+
+  <div id="app" class="hidden">
+    <!-- Who and what -->
+    <div class="card">
+      <label for="staff">Your name</label>
+      <select id="staff"></select>
+      <label>What are you doing?</label>
+      <div id="actions" class="actions"></div>
+      <label for="mrn">Patient MRN</label>
+      <input id="mrn" autocomplete="off">
+      <div id="otWrap">
+        <label for="otRef">OT list / case ref (optional)</label>
+        <input id="otRef" autocomplete="off">
+      </div>
+      <div id="locWrap">
+        <label for="location">Storage location</label>
+        <select id="location"></select>
+      </div>
+      <p class="small">These stay filled in, so you can scan the main lens and both backups one after another.</p>
+    </div>
+
+    <!-- Scanner -->
+    <div class="card">
+      <div id="reader" class="hidden"><video id="video" playsinline muted style="width:100%;border-radius:8px;background:#000"></video></div>
+      <canvas id="canvas" class="hidden"></canvas>
+      <button id="camBtn">Scan with camera</button>
+      <button id="stopBtn" class="secondary hidden">Stop camera</button>
+      <button id="photoBtn" class="secondary">Take a photo of the code instead</button>
+      <input id="photo" type="file" accept="image/*" capture="environment" class="hidden">
+      <label for="manual">Or type / paste the code</label>
+      <input id="manual" autocomplete="off" placeholder="(01)...(17)...(10)...(21)...">
+      <button id="manualBtn" class="secondary">Check code</button>
+      <div id="scanMsg"></div>
+      <p id="readerStatus" class="small">Barcode reader: loading...</p>
+    </div>
+
+    <!-- Result -->
+    <div id="resultCard" class="card hidden">
+      <div id="details"></div>
+      <div id="serialWrap" class="hidden">
+        <p class="msg warn">This barcode has no serial number. Type the serial number (SN) printed on the box, or scan the box's second barcode if it has one. If this is not a lens (for example an injector), tap Cancel.</p>
+        <label for="serialIn">Serial number (SN)</label>
+        <input id="serialIn" autocomplete="off" autocapitalize="characters">
+        <button id="useLotBtn" class="secondary">No serial on the box: use the lot number</button>
+      </div>
+      <div id="newProd" class="hidden">
+        <p class="msg warn">New product code. Please fill this in once, and it will be remembered.</p>
+        <label for="pBrand">Brand</label>
+        <input id="pBrand" list="brandList" autocomplete="off"><datalist id="brandList"></datalist>
+        <label for="pModel">Model</label>
+        <input id="pModel" autocomplete="off">
+        <label for="pPower">Power (D), e.g. 20.5</label>
+        <input id="pPower" type="number" step="0.25" inputmode="decimal">
+        <label for="pVendor">Vendor</label>
+        <select id="pVendor"></select>
+      </div>
+      <label for="notes">Notes (optional)</label>
+      <input id="notes" autocomplete="off">
+      <button id="saveBtn">Save</button>
+      <button id="cancelBtn" class="secondary">Cancel</button>
+      <div id="saveMsg"></div>
+    </div>
+
+    <div class="card">
+      <b>Last scans</b>
+      <div id="recent" class="recent small">Loading...</div>
+    </div>
+  </div>
+</main>
+
+<script>
+var PIN = '', CFG = null, ACTION = '', CURRENT = null, scanner = null, busy = false;
+
+function $(id) { return document.getElementById(id); }
+function store(k, v) { try { localStorage.setItem('iol_' + k, v); } catch (e) {} }
+function load(k) { try { return localStorage.getItem('iol_' + k) || ''; } catch (e) { return ''; } }
+function msg(id, text, cls) { $(id).innerHTML = text ? '<div class="msg ' + (cls || '') + '">' + esc(text) + '</div>' : ''; }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function fill(sel, items, keep, blank) {
+  var h = blank ? '<option value="">' + esc(blank) + '</option>' : '';
+  items.forEach(function (x) { h += '<option>' + esc(x) + '</option>'; });
+  $(sel).innerHTML = h; if (keep && items.indexOf(keep) >= 0) $(sel).value = keep;
+}
+// The Google Apps Script web app that reads and writes the sheet.
+var SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbysRf2vMICaRrk5IMBesYlIxoG5aB0IXD9_tfoKd6OWSck9mZ5iJRS8zIzFUz5_zTSn/exec';
+function call(fn, args, ok, fail) {
+  fail = fail || alertBox;
+  fetch(SCRIPT_URL, {method: 'POST', headers: {'Content-Type': 'text/plain;charset=utf-8'}, body: JSON.stringify({fn: fn, args: args})})
+    .then(function (r) { return r.text(); })
+    .then(function (t) {
+      var res; try { res = JSON.parse(t); } catch (e) { fail('The sheet link is not updated yet (Google code needs the latest version deployed).'); return; }
+      if (res.ok) ok(res.result); else fail(res.error);
+    })
+    .catch(function (e) { fail('No connection to the sheet. Check the internet and try again. (' + e + ')'); });
+}
+function alertBox(t) { msg('scanMsg', t, 'bad'); }
+
+// ---- PIN ----
+$('pin').value = load('pin');
+$('pinBtn').onclick = function () {
+  PIN = $('pin').value.trim();
+  msg('pinMsg', 'Checking...', '');
+  call('getConfig', [PIN], function (cfg) {
+    CFG = cfg; store('pin', PIN);
+    $('pinCard').classList.add('hidden'); $('app').classList.remove('hidden');
+    setup();
+  }, function (e) { msg('pinMsg', e, 'bad'); });
+};
+if (load('pin')) $('pinBtn').click();
+
+function setup() {
+  fill('staff', CFG.staff, load('staff'), 'Choose your name');
+  fill('location', CFG.locations, load('location'));
+  fill('pVendor', CFG.vendors, '', 'Choose vendor');
+  $('brandList').innerHTML = CFG.brands.map(function (b) { return '<option value="' + esc(b) + '">'; }).join('');
+  $('actions').innerHTML = CFG.actions.map(function (a, i) {
+    return '<button data-i="' + i + '">' + esc(a) + '</button>';
+  }).join('');
+  Array.prototype.forEach.call($('actions').children, function (b) {
+    b.onclick = function () { setAction(CFG.actions[+b.getAttribute('data-i')]); };
+  });
+  setAction(load('action') || CFG.actions[0]);
+  $('staff').onchange = function () { store('staff', $('staff').value); };
+  $('location').onchange = function () { store('location', $('location').value); };
+  refreshRecent();
+}
+function setAction(a) {
+  ACTION = a; store('action', a);
+  Array.prototype.forEach.call($('actions').children, function (b) {
+    b.classList.toggle('on', CFG.actions[+b.getAttribute('data-i')] === a);
+  });
+  $('locWrap').classList.toggle('hidden', a !== CFG.receiveAction);
+}
+
+// ---- Scanning (zxing-wasm: square DataMatrix and line barcodes, live or from a photo) ----
+var FORMATS = ['DataMatrix', 'Code128', 'Code39', 'Code93', 'ITF', 'DataBar', 'DataBarExpanded', 'EAN-13', 'QRCode'];
+var WASM_URL = 'https://cdn.jsdelivr.net/npm/zxing-wasm@2.2.4/dist/reader/zxing_reader.wasm';
+var stream = null, camTimer = null, PENDING = null, HINT = null;
+var READER_OK = false;
+function readerStatus(t, bad) { $('readerStatus').textContent = 'Barcode reader: ' + t; $('readerStatus').style.color = bad ? '#a61b1b' : '#1e7e34'; }
+(function initReader() {
+  if (typeof ZXingWASM === 'undefined') { readerStatus('could not download (check internet), then close and reopen the page', true); return; }
+  try {
+    Promise.resolve(ZXingWASM.prepareZXingModule({
+      overrides: {locateFile: function (p, prefix) { return p.endsWith('.wasm') ? WASM_URL : prefix + p; }},
+      fireImmediately: true
+    })).then(function () { READER_OK = true; readerStatus('ready'); })
+      .catch(function (e) { readerStatus('failed to start (' + e + ')', true); });
+  } catch (e) { readerStatus('failed to start (' + e + ')', true); }
+})();
+
+function read(src, harder) {
+  if (typeof ZXingWASM === 'undefined') return Promise.reject(new Error('barcode reader did not load'));
+  return ZXingWASM.readBarcodes(src, {formats: FORMATS, tryHarder: harder, maxNumberOfSymbols: 8})
+    .then(function (rs) { return rs.filter(function (r) { return r.isValid && r.text; }).map(function (r) { return r.text; }); });
+}
+// Some brands use their own line barcode instead of GS1, e.g. Code 39 "618205F924105120728"
+// = model 618, power 20.5 D, serial F92410512, expiry 07/28 (MMYY).
+function parseCustom(t) {
+  var m = /^(\d{3})(\d{3})([A-Z0-9]{9})(\d{2})(\d{2})$/.exec(String(t).trim());
+  if (!m) return null;
+  return {ai01: 'X' + m[1] + m[2], ai21: m[3], ai17: m[5] + m[4] + '00', hint: {model: m[1], power: Number(m[2]) / 10}};
+}
+// Put several codes from one box together (some brands split the UDI over two line barcodes).
+function combine(texts) {
+  var m = PENDING && (Date.now() - PENDING.t < 180000) ? PENDING.p : {};
+  texts.forEach(function (t) {
+    var p = parseGs1(t);
+    if (!p.gtin && !p.ai21) p = parseCustom(t) || p;
+    ['ai01', 'ai11', 'ai17', 'ai10', 'ai21', 'hint'].forEach(function (k) { if (p[k] && !m[k]) m[k] = p[k]; });
+  });
+  if (!m.ai01 && !m.ai21) return null;
+  var raw = (m.ai01 ? '(01)' + m.ai01 : '') + (m.ai11 ? '(11)' + m.ai11 : '') + (m.ai17 ? '(17)' + m.ai17 : '') +
+            (m.ai10 ? '(10)' + m.ai10 : '') + (m.ai21 ? '(21)' + m.ai21 : '');
+  return {raw: raw, p: m};
+}
+function handleTexts(texts) {
+  var c = combine(texts);
+  if (!c) {
+    msg('scanMsg', texts.length ? 'That is not a lens UDI code (it looks like a shop barcode). Scan the UDI code on the lens box.' : 'No code found.', 'bad');
+    return false;
+  }
+  if (!c.p.ai01) {
+    PENDING = {p: c.p, t: Date.now()};
+    msg('scanMsg', 'Got the serial number. Now scan the barcode with the product code (01).', 'warn');
+    return false;
+  }
+  // Product code found. If there is no serial, the page asks for it (or a second barcode can still be scanned).
+  PENDING = c.p.ai21 ? null : {p: c.p, t: Date.now()};
+  HINT = c.p.hint || null;
+  gotCode(c.raw);
+  return true;
+}
+
+$('camBtn').onclick = function () {
+  msg('scanMsg', '');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    msg('scanMsg', 'This phone does not allow the live camera here. Use "Take a photo of the code instead".', 'warn'); return;
+  }
+  navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment', width: {ideal: 1920}, height: {ideal: 1080}}, audio: false})
+    .then(function (s) {
+      stream = s; var v = $('video'); v.srcObject = s; v.play();
+      $('reader').classList.remove('hidden'); $('camBtn').classList.add('hidden'); $('stopBtn').classList.remove('hidden');
+      msg('scanMsg', 'Hold the code inside the picture, about 10 to 15 cm away.', '');
+      var busyFrame = false;
+      camTimer = setInterval(function () {
+        if (busyFrame || !v.videoWidth) return;
+        busyFrame = true;
+        var c = $('canvas'), w = v.videoWidth, h = v.videoHeight;
+        c.width = w; c.height = h;
+        var ctx = c.getContext('2d', {willReadFrequently: true});
+        ctx.drawImage(v, 0, 0, w, h);
+        read(ctx.getImageData(0, 0, w, h), false).then(function (texts) {
+          busyFrame = false;
+          if (texts.length && handleTexts(texts)) stopCam();
+        }).catch(function () { busyFrame = false; });
+      }, 350);
+    })
+    .catch(function (e) {
+      msg('scanMsg', 'The live camera did not open on this phone. Use "Take a photo of the code instead". (' + e.name + ')', 'warn');
+    });
+};
+function stopCam() {
+  if (camTimer) clearInterval(camTimer); camTimer = null;
+  if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); stream = null;
+  $('reader').classList.add('hidden'); $('camBtn').classList.remove('hidden'); $('stopBtn').classList.add('hidden');
+}
+$('stopBtn').onclick = stopCam;
+$('photoBtn').onclick = function () { $('photo').value = ''; $('photo').click(); };
+// Phone photos are large; read them at a few sizes through a canvas (works around iPhone canvas limits).
+function loadImage(file) {
+  return new Promise(function (ok, fail) {
+    var url = URL.createObjectURL(file), img = new Image();
+    img.onload = function () { ok(img); };
+    img.onerror = function () { fail(new Error('could not open the photo')); };
+    img.src = url;
+  });
+}
+function readAtSize(img, maxSide) {
+  var w = img.naturalWidth, h = img.naturalHeight, k = Math.min(1, maxSide / Math.max(w, h));
+  var c = document.createElement('canvas');
+  c.width = Math.round(w * k); c.height = Math.round(h * k);
+  var ctx = c.getContext('2d', {willReadFrequently: true});
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  return read(ctx.getImageData(0, 0, c.width, c.height), true);
+}
+$('photo').onchange = function () {
+  var f = $('photo').files[0]; if (!f) return;
+  stopCam();
+  msg('scanMsg', 'Reading the photo...', '');
+  var sizes = [2000, 3000, 1200], info = '';
+  loadImage(f).then(function (img) {
+    info = img.naturalWidth + 'x' + img.naturalHeight;
+    var i = 0;
+    function next() {
+      if (i >= sizes.length) return [];
+      return readAtSize(img, sizes[i++]).then(function (t) { return t.length ? t : next(); }, function () { return next(); });
+    }
+    return next();
+  }).then(function (texts) {
+    if (!texts.length) {
+      msg('scanMsg', 'Could not find a code in that photo (' + info + '). Take it straight on, in good light, with the barcode filling about half the width of the picture.', 'bad');
+      return;
+    }
+    handleTexts(texts);
+  }).catch(function (e) { msg('scanMsg', 'Could not read the photo (' + e + ').', 'bad'); });
+};
+$('manualBtn').onclick = function () { if ($('manual').value.trim()) handleTexts([$('manual').value.trim()]); };
+
+function gotCode(text) {
+  if (navigator.vibrate) navigator.vibrate(80);
+  msg('scanMsg', 'Looking up...', '');
+  call('lookup', [PIN, text], function (res) {
+    msg('scanMsg', '');
+    if (!res.ok) { msg('scanMsg', res.msg, 'bad'); return; }
+    CURRENT = {raw: text, res: res};
+    showResult(res);
+  });
+}
+
+function showResult(res) {
+  var p = res.parsed, pr = res.product, l = res.lens;
+  var h = '';
+  if (pr) h += '<div style="font-size:18px;font-weight:bold;margin-bottom:6px">' + esc(pr.brand + ' ' + pr.model + ' ' + pr.power + ' D') + '</div>';
+  h += row('Serial', p.serial || '(not in barcode)') + row('Lot', p.lot) + row('Expiry', p.expiry ? p.expiry.text : 'not in code') + row('Product code', p.gtin);
+  if (l) {
+    h += row('Status now', l.status + (l.flag && l.flag !== 'OK' ? ' (' + l.flag + ')' : '')) + row('Ordered for MRN', l.mrn || '-') + row('Last scan', l.lastAction + ' ' + l.lastScan);
+  } else {
+    h += row('Status now', 'New lens, not in the sheet yet');
+  }
+  $('details').innerHTML = h;
+  $('newProd').classList.toggle('hidden', !!pr);
+  $('serialWrap').classList.toggle('hidden', !res.needSerial);
+  $('serialIn').value = '';
+  if (!pr && HINT) { $('pModel').value = HINT.model || ''; $('pPower').value = HINT.power || ''; }
+  var warn = checkAction(l);
+  msg('saveMsg', warn, warn ? 'warn' : '');
+  if (l && !$('mrn').value && l.mrn) $('mrn').value = l.mrn;
+  $('resultCard').classList.remove('hidden');
+  $('resultCard').scrollIntoView({behavior: 'smooth'});
+}
+function row(a, b) { return '<div class="row"><span>' + esc(a) + '</span><span>' + esc(b) + '</span></div>'; }
+function checkAction(l) {
+  var s = l ? l.status : '';
+  if (ACTION === CFG.receiveAction && l) return 'This lens is already in the sheet (' + s + '). Check before saving.';
+  if (ACTION.indexOf('OUT') === 0 && s && s !== 'In stock' && s !== 'In OT') return 'This lens shows as "' + s + '". Check before saving.';
+  if (!l && ACTION !== CFG.receiveAction) return 'This lens was never received in the sheet. It will be added now.';
+  return '';
+}
+
+$('useLotBtn').onclick = function () { if (CURRENT) $('serialIn').value = CURRENT.res.parsed.lot || ''; };
+$('cancelBtn').onclick = function () { PENDING = null; HINT = null; $('resultCard').classList.add('hidden'); CURRENT = null; msg('saveMsg', ''); };
+$('saveBtn').onclick = function () {
+  if (!CURRENT || busy) return;
+  if (!$('staff').value) { msg('saveMsg', 'Choose your name first.', 'bad'); return; }
+  var raw = CURRENT.raw;
+  if (CURRENT.res.needSerial) {
+    var sn = $('serialIn').value.trim().toUpperCase();
+    if (!sn) { msg('saveMsg', 'Type the serial number from the box first.', 'bad'); return; }
+    raw = raw + '(21)' + sn;
+  }
+  var data = {raw: raw, staff: $('staff').value, action: ACTION, mrn: $('mrn').value.trim(),
+    otRef: $('otRef').value.trim(), notes: $('notes').value.trim(), location: $('location').value,
+    product: {brand: $('pBrand').value.trim(), model: $('pModel').value.trim(), power: $('pPower').value, vendor: $('pVendor').value}};
+  if (!CURRENT.res.product && (!data.product.brand || !data.product.model || data.product.power === '')) {
+    msg('saveMsg', 'Fill in brand, model and power for this new product.', 'bad'); return;
+  }
+  busy = true; $('saveBtn').disabled = true; msg('saveMsg', 'Saving...', '');
+  call('saveScan', [PIN, data], function (res) {
+    busy = false; $('saveBtn').disabled = false;
+    var pr = res.product || {}, l = res.lens || {};
+    PENDING = null; HINT = null;
+    msg('scanMsg', 'Saved: ' + (pr.brand || '') + ' ' + (pr.model || '') + ' ' + (pr.power || '') + ' D, serial ' + res.parsed.serial + '. Status: ' + (l.status || '') + '.', 'ok');
+    $('resultCard').classList.add('hidden'); $('notes').value = '';
+    ['pBrand', 'pModel', 'pPower'].forEach(function (id) { $(id).value = ''; });
+    CURRENT = null; refreshRecent();
+    window.scrollTo({top: 0, behavior: 'smooth'});
+  }, function (e) { busy = false; $('saveBtn').disabled = false; msg('saveMsg', e, 'bad'); });
+};
+
+function refreshRecent() {
+  call('getRecent', [PIN], function (rows) {
+    $('recent').innerHTML = rows.length ? rows.map(function (r) {
+      return '<div>' + esc(r.date + ' ' + r.time + ' · ' + r.action + ' · ' + r.brand + ' ' + r.model + ' ' + r.power + ' · MRN ' + r.mrn + ' · ' + r.staff) + '</div>';
+    }).join('') : 'No scans yet.';
+  }, function () { $('recent').textContent = ''; });
+}
+// ---- GS1 UDI parser (shared by Code.gs and Index.html) ----
+var GS1_FIXED = {'00':18,'01':14,'02':14,'11':6,'12':6,'13':6,'15':6,'16':6,'17':6,'20':2};
+var GS1_VAR = {'10':20,'21':20,'22':20,'30':8,'37':8,'240':30,'241':30,'250':30,'251':30,'235':28,'7240':20};
+function parseGs1(raw) {
+  var out = {raw: raw || ''};
+  var s = String(raw || '').trim();
+  s = s.replace(/^\][A-Za-z][0-9]/, '');      // symbology id such as ]d2 ]C1 ]Q3
+  s = s.replace(/^\u001d+/, '');
+  if (s.indexOf('(') === 0) {                   // human readable form (01)...(17)...
+    var re = /\((\d{2,4})\)([^(]*)/g, m;
+    while ((m = re.exec(s)) !== null) out['ai' + m[1]] = m[2].replace(/\u001d/g, '').trim();
+  } else {
+    var i = 0, guard = 0;
+    while (i < s.length && guard++ < 20) {
+      if (s.charAt(i) === '\u001d') { i++; continue; }
+      var ai = null, len = 0, fixed = false;
+      var two = s.substr(i, 2), three = s.substr(i, 3), four = s.substr(i, 4);
+      if (GS1_FIXED[two] !== undefined) { ai = two; len = GS1_FIXED[two]; fixed = true; }
+      else if (GS1_VAR[two] !== undefined) { ai = two; len = GS1_VAR[two]; }
+      else if (GS1_VAR[three] !== undefined) { ai = three; len = GS1_VAR[three]; }
+      else if (GS1_VAR[four] !== undefined) { ai = four; len = GS1_VAR[four]; }
+      else break;
+      i += ai.length;
+      var val;
+      if (fixed) { val = s.substr(i, len); i += len; }
+      else {
+        var end = s.indexOf('\u001d', i);
+        if (end < 0 || end - i > len) end = Math.min(s.length, i + len);
+        val = s.substring(i, end); i = end;
+      }
+      out['ai' + ai] = val;
+    }
+  }
+  out.gtin = out.ai01 || '';
+  out.lot = out.ai10 || '';
+  out.serial = out.ai21 || '';
+  out.expiry = gs1Date(out.ai17);
+  out.mfg = gs1Date(out.ai11);
+  out.isLens = !!(out.gtin && out.serial);
+  out.key = out.gtin ? '(01)' + out.gtin + (out.ai17 ? '(17)' + out.ai17 : '') +
+            (out.lot ? '(10)' + out.lot : '') + (out.serial ? '(21)' + out.serial : '') : '';
+  return out;
+}
+// YYMMDD; DD = 00 means the last day of that month. Returns {y,m,d,text} or null.
+function gs1Date(v) {
+  if (!v || !/^\d{6}$/.test(v)) return null;
+  var y = 2000 + parseInt(v.substr(0, 2), 10), m = parseInt(v.substr(2, 2), 10), d = parseInt(v.substr(4, 2), 10);
+  if (m < 1 || m > 12) return null;
+  if (d === 0) d = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  var p = function (n) { return (n < 10 ? '0' : '') + n; };
+  return {y: y, m: m, d: d, text: p(d) + '/' + p(m) + '/' + y};
+}
+// ---- end GS1 parser ----
+</script>
+</body>
+</html>
